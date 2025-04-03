@@ -10,6 +10,7 @@
         <table id="analysis_list" class="table table-hover">
             <thead>
                 <tr>
+                    <th scope="col">Created at</th>
                     <th scope="col">Target</th>
                     <th scope="col">Tag</th>
                     <th scope="col">Status</th>
@@ -19,6 +20,10 @@
         </table>
         <p>
             <a class="btn btn-primary" href="/results?task_filter=interesting">Show results for all targets</a>
+
+            {% if has_finished_analyses %}
+                <a class="btn btn-success" href="/remove-finished-analyses">Remove finished analyses</a>
+            {% endif %}
         </p>
         <p>
             Hint: Browse to the <a href="/queue">task queue</a> to see how the tasks are progressing.
@@ -26,6 +31,7 @@
     {% else %}
         No targets have yet been analysed. <a href="/add">Analyze targets.</a>
     {% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -36,9 +42,13 @@
                 pageLength: 10,
                 serverSide: true,
                 columnDefs: [{
-                    "targets": [2, 3],
+                    "targets": [3, 4],
                     "orderable": false
                 }]
+            });
+
+            table.on('draw.dt', function () {
+                $('[data-bs-toggle="tooltip"]').tooltip();
             });
         })
     </script>

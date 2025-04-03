@@ -4,12 +4,11 @@ import os
 import random
 import string
 from difflib import SequenceMatcher
-from itertools import product
 from typing import IO, List, Set
 
 from karton.core import Task
 
-from artemis import http_requests
+from artemis import load_risk_class
 from artemis.binds import Service, TaskStatus, TaskType
 from artemis.config import Config
 from artemis.models import FoundURL
@@ -22,38 +21,22 @@ def read_paths_from_file(file: IO[str]) -> List[str]:
     return [line.strip().lstrip("/") for line in file if not line.startswith("#")]
 
 
-FILENAMES_WITHOUT_EXTENSIONS = [
-    "admin_backup",
-    "admin.backup",
-    "admin_bkp",
-    "admin.bkp",
-    "admin_old",
-    "admin.old",
-    "panel",
-    "pack",
-    "backup",
-    "old",
-    "sql",
-    "www",
-]
+CHOSEN_BRUTER_LISTS_PATH = os.path.join(
+    os.path.dirname(__file__), "data", "bruter", "lists", Config.Modules.Bruter.BRUTER_FILE_LIST
+)
 
-EXTENSIONS = ["zip", "tar.gz", "7z", "tar", "gz", "tgz"]
-with open(os.path.join(os.path.dirname(__file__), "data", "Common-DB-Backups.txt")) as common_db_backups_file:
-    with open(os.path.join(os.path.dirname(__file__), "data", "quickhits.txt")) as quickhits_file:
-        with open(
-            os.path.join(os.path.dirname(__file__), "data", "bruter_additional_paths.txt")
-        ) as bruter_additional_paths_file:
-            FILENAMES_TO_SCAN: Set[str] = set(
-                [f"{a}.{b}" for a, b in product(FILENAMES_WITHOUT_EXTENSIONS, EXTENSIONS)]
-                + read_paths_from_file(common_db_backups_file)
-                + read_paths_from_file(quickhits_file)
-                + read_paths_from_file(bruter_additional_paths_file)
-            )
+FILENAMES_TO_SCAN: Set[str] = set()
 
-with open(os.path.join(os.path.dirname(__file__), "data", "ignore_paths.txt")) as ignore_paths_file:
-    IGNORE_PATHS_ORIGINAL = read_paths_from_file(ignore_paths_file)
-    IGNORE_PATHS = set(IGNORE_PATHS_ORIGINAL) | {path + "/" for path in IGNORE_PATHS_ORIGINAL}
-    FILENAMES_TO_SCAN = FILENAMES_TO_SCAN - IGNORE_PATHS
+if Config.Modules.Bruter.BRUTER_FILE_LIST not in ["full", "short"]:
+    raise Exception(
+        "There are two possible bruter file list: short and full, not %s" % Config.Modules.Bruter.BRUTER_FILE_LIST
+    )
+
+for file_name in os.listdir(CHOSEN_BRUTER_LISTS_PATH):
+    with open(os.path.join(CHOSEN_BRUTER_LISTS_PATH, file_name)) as f:
+        for item in read_paths_from_file(f):
+            FILENAMES_TO_SCAN.add(item)
+
 
 IGNORED_CONTENTS = [
     "",
@@ -71,6 +54,7 @@ class BruterResult:
     checked_paths: List[str]
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.MEDIUM)
 class Bruter(ArtemisBase):
     """
     Brute-forces common paths such as /index.php.bak. Tries commonly found paths on each target and experiments with random other paths
@@ -93,7 +77,7 @@ class Bruter(ArtemisBase):
         dummy_random_token = "".join(random.choices(string.ascii_letters + string.digits, k=16))
         dummy_url = base_url + "/" + dummy_random_token
         try:
-            dummy_content = http_requests.get(dummy_url).content
+            dummy_content = self.http_get(dummy_url).content
         except Exception:
             dummy_content = ""
 
@@ -104,7 +88,7 @@ class Bruter(ArtemisBase):
             self.log.info(f"bruter url {i}/{len(FILENAMES_TO_SCAN)}: {url}")
             try:
                 full_url = base_url + "/" + url
-                results[full_url] = http_requests.get(
+                results[full_url] = self.http_get(
                     full_url, allow_redirects=Config.Modules.Bruter.BRUTER_FOLLOW_REDIRECTS
                 )
             except Exception:
@@ -165,6 +149,9 @@ class Bruter(ArtemisBase):
         )
 
     def run(self, task: Task) -> None:
+        if not self.check_connection_to_base_url_and_save_error(task):
+            return
+
         scan_result = self.scan(task)
 
         if len(scan_result.found_urls) > 0:

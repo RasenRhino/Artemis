@@ -8,7 +8,7 @@ from typing import List
 from bs4 import BeautifulSoup
 from karton.core import Task
 
-from artemis import http_requests
+from artemis import load_risk_class
 from artemis.binds import Service, TaskStatus, TaskType
 from artemis.config import Config
 from artemis.models import FoundURL
@@ -21,6 +21,7 @@ MAX_TESTS_PER_URL = 20
 S3_BASE_DOMAIN = "s3.amazonaws.com"
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.LOW)
 class DirectoryIndex(ArtemisBase):
     """
     Detects directory index enabled on the server by checking paths mentioned in the home page source (e.g. with <link href="/styles/..." ...>).
@@ -32,7 +33,7 @@ class DirectoryIndex(ArtemisBase):
     ]
 
     def scan(self, base_url: str) -> List[FoundURL]:
-        response = http_requests.get(base_url)
+        response = self.http_get(base_url)
         soup = BeautifulSoup(response.content, "html.parser")
         original_base_url_parsed = urllib.parse.urlparse(base_url)
 
@@ -71,7 +72,7 @@ class DirectoryIndex(ArtemisBase):
         results = []
         for path_candidate in path_candidates_list:
             url = urllib.parse.urljoin(base_url, path_candidate)
-            response = http_requests.get(url)
+            response = self.http_get(url)
             content = response.content
             if is_directory_index(content):
                 results.append(

@@ -2,9 +2,8 @@ import logging
 import subprocess
 import time
 import urllib.parse
-from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from whoisdomain import Domain, WhoisQuotaExceeded  # type: ignore
 from whoisdomain import query as whois_query
@@ -12,7 +11,7 @@ from whoisdomain import query as whois_query
 from artemis.config import Config
 
 CONSOLE_LOG_HANDLER = logging.StreamHandler()
-CONSOLE_LOG_HANDLER.setLevel(logging.INFO)
+CONSOLE_LOG_HANDLER.setLevel(getattr(logging, Config.Miscellaneous.LOG_LEVEL))
 CONSOLE_LOG_HANDLER.setFormatter(logging.Formatter(Config.Miscellaneous.LOGGING_FORMAT_STRING))
 
 
@@ -28,24 +27,32 @@ class CalledProcessErrorWithMessage(subprocess.CalledProcessError):
         return self.message
 
 
-def check_output_log_on_error(command: List[str], logger: logging.Logger, **kwargs: Any) -> bytes:
-    try:
-        return subprocess.check_output(command, stderr=subprocess.PIPE, **kwargs)  # type: ignore
-    except subprocess.CalledProcessError as e:
+def check_output_log_on_error_with_stderr(
+    command: List[str], logger: logging.Logger, **kwargs: Any
+) -> Tuple[bytes, bytes]:
+    result = subprocess.run(command, capture_output=True, **kwargs)
+    if result.returncode == 0:
+        return (result.stdout, result.stderr)
+    else:
         command_str_shortened = repr(command)
         if len(command_str_shortened) > 100:
             command_str_shortened = command_str_shortened[:100] + "..."
 
-        message = 'Error when running "%s": output="%s" error="%s" original message="%s"' % (
+        message = 'Error when running "%s": output="%s" error="%s" returncode="%d"' % (
             command_str_shortened,
-            e.stdout.decode("ascii", errors="ignore"),
-            e.stderr.decode("ascii", errors="ignore"),
-            repr(e),
+            result.stdout.decode("ascii", errors="ignore") if result.stdout else "",
+            result.stderr.decode("ascii", errors="ignore") if result.stderr else "",
+            result.returncode,
         )
         logger.error(message)
         raise CalledProcessErrorWithMessage(
-            message=message, returncode=e.returncode, cmd=e.cmd, output=e.output, stderr=e.stderr
+            message=message, returncode=result.returncode, cmd=command, output=result.stdout, stderr=result.stderr
         )
+
+
+def check_output_log_on_error(command: List[str], logger: logging.Logger, **kwargs: Any) -> bytes:
+    stdout, stderr = check_output_log_on_error_with_stderr(command, logger, **kwargs)
+    return stdout
 
 
 def perform_whois_or_sleep(domain: str, logger: logging.Logger) -> Optional[Domain]:
@@ -68,7 +75,7 @@ def perform_whois_or_sleep(domain: str, logger: logging.Logger) -> Optional[Doma
 
 def build_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(getattr(logging, Config.Miscellaneous.LOG_LEVEL))
     for handler in logger.handlers:
         logger.removeHandler(handler)
     logger.addHandler(CONSOLE_LOG_HANDLER)
@@ -87,12 +94,11 @@ def is_directory_index(content: str) -> bool:
     )
 
 
-def throttle_request(f: Callable[[], Any]) -> Any:
-    request_per_second = Config.Limits.REQUESTS_PER_SECOND
-    if request_per_second == 0:
+def throttle_request(f: Callable[[], Any], requests_per_second: float = Config.Limits.REQUESTS_PER_SECOND) -> Any:
+    if requests_per_second == 0:
         return f()
-    elif request_per_second > 0:
-        average_time_per_request = 1 / request_per_second
+    elif requests_per_second > 0:
+        average_time_per_request = 1 / requests_per_second
         f_start = time.time()
         try:
             return f()
@@ -106,15 +112,6 @@ def get_host_from_url(url: str) -> str:
     host = urllib.parse.urlparse(url).hostname
     assert host is not None
     return host
-
-
-def is_ip_address(host: str) -> bool:
-    try:
-        # if this doesn't throw then we have an IP address
-        ip_address(host)
-        return True
-    except ValueError:
-        return False
 
 
 def read_template(path: str) -> str:

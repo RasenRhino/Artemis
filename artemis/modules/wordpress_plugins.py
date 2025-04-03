@@ -11,11 +11,12 @@ from typing import Any, Dict, List, Optional
 import requests
 from karton.core import Task
 
-from artemis import http_requests
+from artemis import load_risk_class
 from artemis.binds import TaskStatus, TaskType, WebApplication
 from artemis.config import Config
 from artemis.crawling import get_links_and_resources_on_same_domain
 from artemis.domains import is_subdomain
+from artemis.fallback_api_cache import FallbackAPICache
 from artemis.module_base import ArtemisBase
 
 # Some readmes are long, longer than the default 100kb
@@ -35,41 +36,40 @@ PLUGINS_WITH_REVERSED_CHANGELOGS = [
     "sumome",
     "userway-accessibility-widget",
     "visual-footer-credit-remover",
+    "wp-events-manager",
     "zarinpal-woocommerce-payment-gateway",
 ]
-PLUGINS_TO_SKIP_CHANGELOG = ["wp-members", "wordpress-popup"]
+PLUGINS_TO_SKIP_CHANGELOG = [
+    "backwpup",
+    "everest-forms",
+    "social-pug",
+    "wordpress-popup",
+    "wp-members",
+    "wppao-sitemap",
+    "yith-woocommerce-catalog-mode",
+]
 PLUGINS_TO_SKIP_STABLE_TAG = [
     "flowpaper-lite-pdf-flipbook",
     "scheduled-post-trigger",
     "pdf-viewer-for-elementor",
-    "userway-accessibility-widget",
+    "wow-carousel-for-divi-lite",
 ]
 PLUGINS_BAD_VERSION_IN_README = [
-    "blocks-animation",
-    "button-contact-vr",
-    "cf7-to-zapier",
-    "change-admin-email-setting-without-outbound-email",
-    "clearfy",
+    "cf7-styler-for-divi",
     "coming-soon",
     "delete-all-comments-of-website",
     "disable-remove-google-fonts",
     "famethemes-demo-importer",
+    "icon-element",
     "link-manager",
-    "official-facebook-pixel",
+    "login-logo",
     "page-or-post-clone",
-    "printfriendly",
-    "robin-image-optimizer",
-    "shapepress-dsgvo",
+    "rafflepress",
     "skyboot-custom-icons-for-elementor",
-    "subscribe-to-comments",
-    "themesflat-addons-for-elementor",
-    "userway-accessibility-widget",
+    "two-factor",
     "website-monetization-by-magenet",
     "woo-tools",
-    "wp-less",
-    "wp-lightbox-2",
     "wp-maximum-execution-time-exceeded",
-    "yet-another-stars-rating",
 ]
 
 
@@ -141,6 +141,7 @@ def get_version_from_readme(slug: str, readme_content: str) -> Optional[str]:
             if (
                 line.startswith("for the plugin's full changelog")
                 or line.startswith("this changelog is for")
+                or line.startswith("for detailed release notes")
                 or line.startswith("-----")
             ):
                 continue
@@ -151,16 +152,18 @@ def get_version_from_readme(slug: str, readme_content: str) -> Optional[str]:
                 if line.startswith(slug):
                     line = line[len(slug) :].strip(" :")
                 # Some changelog entries have the format version <version>
-                if "version" in line:
+                # let's take only first 25 characters as the "version" word may occur in a middle of a sentence
+                if "version" in line[:25]:
                     line = line[line.find("version") + len("version") :].strip(" :")
-                # Some changelog entries have the format V <version>
-                if "v " in line:
+                # Some changelog entries have the format V <version> - let's match them but with word-boundary matcher
+                # so that we don't match "nov"
+                if re.search(r"\bv ", line):
                     line = line[line.find("v ") + len("v ") :].strip(" :")
                 if line.startswith("v"):
                     line = line[1:]
 
                 version = (
-                    re.sub(r"(\(|\*|\[|\]|/|'|:|,|-|<h4>|</h4>)", " ", line)
+                    re.sub(r"(\(|\*|\[|\]|/|'|:|,|-|=|<h4>|</h4>)", " ", line)
                     .strip()
                     # Some versions are prefixed with 'v' (e.g. v1.0.0)
                     .lstrip("v")
@@ -181,7 +184,7 @@ def get_version_from_readme(slug: str, readme_content: str) -> Optional[str]:
     if slug in PLUGINS_TO_SKIP_STABLE_TAG:
         return changelog_version
 
-    tag_lines = [line for line in readme_content.lower().split("\n") if line.strip("* -").startswith("stable tag")]
+    tag_lines = [line for line in readme_content.lower().split("\n") if line.strip("* -\t").startswith("stable tag")]
     if len(tag_lines) > 1:
         return changelog_version
 
@@ -209,6 +212,7 @@ class WordpressPluginsScanningException(Exception):
     pass
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.MEDIUM)
 class WordpressPlugins(ArtemisBase):
     """
     Checks whether WordPress plugins are up-to-date.
@@ -221,9 +225,7 @@ class WordpressPlugins(ArtemisBase):
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        response = requests.get(
-            "https://api.wordpress.org/plugins/info/1.2/?action=query_plugins&request[page]=1&request[per_page]=1000"
-        )
+        response = FallbackAPICache.Urls.WORDPRESS_PLUGINS_LIST.value.get()
         json_response = response.json()
         self._top_plugins = [
             {
@@ -246,13 +248,9 @@ class WordpressPlugins(ArtemisBase):
             match = re.search(pattern, link)
             if match:
                 slug = match.group(1)
-                data = json.loads(
-                    self.cached_get(
-                        f"https://api.wordpress.org/plugins/info/1.0/{slug}.json",
-                        "version-" + slug,
-                        timeout=3600,
-                    )
-                )
+                data = FallbackAPICache.get(
+                    f"https://api.wordpress.org/plugins/info/1.0/{slug}.json", allow_unknown=True
+                ).json()
 
                 plugin_data.append(
                     {
@@ -266,7 +264,7 @@ class WordpressPlugins(ArtemisBase):
     def run(self, current_task: Task) -> None:
         url = current_task.get_payload("url")
 
-        response = http_requests.get(url)
+        response = self.http_get(url)
         not_scanning_redirect_message = None
         if response.is_redirect:
             redirect_url = response.url
@@ -333,7 +331,7 @@ class WordpressPlugins(ArtemisBase):
 
             try:
                 if plugin["slug"] in self._readme_file_names:
-                    response = http_requests.get(
+                    response = self.http_get(
                         urllib.parse.urljoin(
                             url,
                             "/wp-content/plugins/"
@@ -346,7 +344,7 @@ class WordpressPlugins(ArtemisBase):
                     )
                 else:
                     for file_name in FILE_NAME_CANDIDATES:
-                        response = http_requests.get(
+                        response = self.http_get(
                             urllib.parse.urljoin(
                                 url, "/wp-content/plugins/" + plugin["slug"] + "/" + file_name + cachebuster
                             ),
@@ -381,8 +379,17 @@ class WordpressPlugins(ArtemisBase):
         messages = []
         closed_plugins = []
         for plugin_slug in plugins.keys():
-            existed = len(requests.get("https://api.wordpress.org/stats/plugin/1.0/" + plugin_slug).json()) > 0
-            plugin_data = requests.get(f"https://api.wordpress.org/plugins/info/1.0/{plugin_slug}.json").json()
+            existed = (
+                len(
+                    FallbackAPICache.get(
+                        f"https://api.wordpress.org/stats/plugin/1.0/{plugin_slug}", allow_unknown=True
+                    ).json()
+                )
+                > 0
+            )
+            plugin_data = FallbackAPICache.get(
+                f"https://api.wordpress.org/plugins/info/1.0/{plugin_slug}.json", allow_unknown=True
+            ).json()
             still_exists = "error" not in plugin_data
 
             if existed and not still_exists:

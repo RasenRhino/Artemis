@@ -7,11 +7,12 @@ import paramiko
 from karton.core import Task
 from pydantic import BaseModel
 
+from artemis import load_risk_class
 from artemis.binds import Service, TaskStatus, TaskType
 from artemis.config import Config
+from artemis.ip_utils import is_ip_address
 from artemis.module_base import ArtemisBase
 from artemis.task_utils import get_target_host
-from artemis.utils import is_ip_address, throttle_request
 
 BRUTE_CREDENTIALS = [
     ("user", "password"),
@@ -30,6 +31,7 @@ class SSHBruterResult(BaseModel):
     credentials: List[Tuple[str, str]] = []
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.MEDIUM)
 class SSHBruter(ArtemisBase):
     """
     Performs a brute force attack on SSH.
@@ -65,7 +67,9 @@ class SSHBruter(ArtemisBase):
                 # Some SSH servers drop connections after a large number of tries in a short
                 # time period. This serves to combat this behavior.
                 time.sleep(Config.Modules.SSHBruter.ADDITIONAL_BRUTE_FORCE_SLEEP_SECONDS)
-                throttle_request(lambda: client.connect(hostname=host, port=port, username=username, password=password))
+                self.throttle_request(
+                    lambda: client.connect(hostname=host, port=port, username=username, password=password)
+                )
                 result.credentials.append((username, password))
                 client.close()
             except (

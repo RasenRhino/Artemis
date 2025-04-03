@@ -23,6 +23,11 @@ from artemis.utils import get_host_from_url
 
 from .translations.nuclei_messages import pl_PL as translations_nuclei_messages_pl_PL
 
+SEVERITY_OVERRIDES = {
+    "http/exposures/logs/": "medium",
+    "http/misconfiguration/server-status.yaml": "medium",
+}
+
 
 class NucleiReporter(Reporter):
     NUCLEI_VULNERABILITY = ReportType("nuclei_vulnerability")
@@ -45,6 +50,7 @@ class NucleiReporter(Reporter):
                     or report.additional_data["original_template_name"]
                     in Config.Modules.Nuclei.NUCLEI_SUSPICIOUS_TEMPLATES
                 ):
+                    report.is_suspicious = True
                     result.append(
                         f"Suspicious template: {report.additional_data['template_name']} in {report.target} "
                         f"(curl_command: {report.additional_data['curl_command']}) - please review whether it's indeed "
@@ -61,6 +67,10 @@ class NucleiReporter(Reporter):
         def _is_url_without_path_query_fragment(url: str) -> bool:
             url_parsed = urllib.parse.urlparse(url)
             return url_parsed.path.strip("/") == "" and not url_parsed.query and not url_parsed.fragment
+
+        def _is_url_without_query_fragment(url: str) -> bool:
+            url_parsed = urllib.parse.urlparse(url)
+            return not url_parsed.query and not url_parsed.fragment
 
         if task_result["headers"]["receiver"] != "nuclei":
             return []
@@ -135,17 +145,31 @@ class NucleiReporter(Reporter):
                 ):
                     target = matched_at
 
+                matched_at_parsed = urllib.parse.urlparse(matched_at)
+
+                severity = vulnerability["info"]["severity"]
+
+                for prefix, severity in SEVERITY_OVERRIDES.items():
+                    if original_template_name.startswith(prefix):
+                        severity = severity
+
                 result.append(
                     Report(
                         top_level_target=get_top_level_target(task_result),
                         target=target,
                         report_type=NucleiReporter.NUCLEI_VULNERABILITY,
                         additional_data={
+                            "is_url_without_query_fragment": _is_url_without_query_fragment(matched_at),
+                            "hostname": matched_at_parsed.hostname,
+                            "path_query_fragment": matched_at_parsed.path
+                            + (("?" + matched_at_parsed.query) if matched_at_parsed.query else "")
+                            + (("#" + matched_at_parsed.fragment) if matched_at_parsed.fragment else ""),
                             "description_en": description,
                             "description_translated": NucleiReporter._translate_description(
                                 template, description, language
                             ),
-                            "reference": vulnerability["info"]["reference"],
+                            "reference": vulnerability["info"].get("reference", []),
+                            "severity": severity,
                             "matched_at": matched_at,
                             "template_name": template,
                             "original_template_name": original_template_name,
@@ -185,9 +209,9 @@ class NucleiReporter(Reporter):
 
     @staticmethod
     def _translate_description(template_name: str, description: str, language: Language) -> str:
-        if language == Language.en_US:
+        if language == Language.en_US:  # type: ignore
             return description
-        elif language == Language.pl_PL:
+        elif language == Language.pl_PL:  # type: ignore
             # See the comment in the artemis.reporting.modules.nuclei.translations.nuclei_messsages.pl_PL
             # module for the rationale of using Python dictionaries instead of .po files.
             description = description.strip()

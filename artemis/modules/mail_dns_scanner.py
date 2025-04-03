@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import dataclasses
 import os
-import socket
-from smtplib import SMTP, SMTPServerDisconnected
 from typing import List, Optional
 
 import dns.name
@@ -12,22 +10,21 @@ from libmailgoose.scan import DomainScanResult as SPFDMARCScanResult
 from libmailgoose.scan import ScanningException, scan_domain
 from publicsuffixlist import PublicSuffixList
 
-from artemis.binds import Service, TaskStatus, TaskType
-from artemis.config import Config
+from artemis import load_risk_class
+from artemis.binds import TaskStatus, TaskType
 from artemis.domains import is_main_domain
 from artemis.module_base import ArtemisBase
-from artemis.resolvers import lookup
-from artemis.utils import throttle_request
+from artemis.task_utils import has_ip_range
 
 PUBLIC_SUFFIX_LIST = PublicSuffixList()
 
 
 @dataclasses.dataclass
 class MailDNSScannerResult:
-    mail_server_found: bool = False
     spf_dmarc_scan_result: Optional[SPFDMARCScanResult] = None
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.LOW)
 class MailDNSScanner(ArtemisBase):
     """
     Checks whether there is a mail server associated with the current domain and checks if SPF and DMARC records are present.
@@ -36,25 +33,6 @@ class MailDNSScanner(ArtemisBase):
     identity = "mail_dns_scanner"
     filters = [{"type": TaskType.DOMAIN.value}]
 
-    @staticmethod
-    def is_smtp_server(host: str, port: int) -> bool:
-        def test() -> bool:
-            smtp = SMTP(timeout=Config.Limits.REQUEST_TIMEOUT_SECONDS)
-            try:
-                smtp.connect(host, port=port)
-                smtp.close()
-                return True
-            except socket.timeout:
-                return False
-            except ConnectionRefusedError:
-                return False
-            except OSError:
-                return False
-            except SMTPServerDisconnected:
-                return False
-
-        return throttle_request(test)  # type: ignore
-
     def scan(self, current_task: Task, domain: str) -> MailDNSScannerResult:
         result = MailDNSScannerResult()
 
@@ -62,29 +40,9 @@ class MailDNSScanner(ArtemisBase):
 
         # Try to find an SMTP for current domain
         try:
-            domain_mx_records = dns.resolver.resolve(domain, "MX")
-            for domain_mx_record in domain_mx_records:
-                exchange = str(domain_mx_record.exchange).removesuffix(".")
-                result.mail_server_found = True
-                has_mx_records = True
-                for port in (25, 465, 587):
-                    if self.is_smtp_server(exchange, port):
-                        for host in [exchange] + list(lookup(exchange)):
-                            new_task = Task(
-                                {
-                                    "type": TaskType.SERVICE,
-                                    "service": Service.SMTP,
-                                },
-                                payload={
-                                    "host": host,
-                                    "port": port,
-                                    "mail_domain": domain,
-                                },
-                            )
-                            self.add_task(current_task, new_task)
+            has_mx_records = len(dns.resolver.resolve(domain, "MX")) > 0
         except dns.resolver.NoAnswer:
-            if self.is_smtp_server(domain, 25):
-                result.mail_server_found = True
+            pass
 
         try:
             # Ignore_void_dns_lookups is set because:
@@ -152,6 +110,11 @@ class MailDNSScanner(ArtemisBase):
         return result
 
     def run(self, current_task: Task) -> None:
+        # If the task originated from an IP-based one, that means, that we are scanning a domain that came from reverse DNS search.
+        # Misconfigured SPF/DMARC on such domains is not actually related to scanned IP ranges, therefore let's skip it.
+        if has_ip_range(current_task):
+            return
+
         if current_task.get_payload("mail_domain"):
             self.db.save_task_result(task=current_task, status=TaskStatus.OK)
             return
@@ -160,18 +123,12 @@ class MailDNSScanner(ArtemisBase):
         result = self.scan(current_task, domain)
 
         status_reasons: List[str] = []
-        if (
-            result.spf_dmarc_scan_result
-            and result.spf_dmarc_scan_result.spf
-            and not result.spf_dmarc_scan_result.spf.valid
-        ):
+        if result.spf_dmarc_scan_result and result.spf_dmarc_scan_result.spf:
             status_reasons.extend(result.spf_dmarc_scan_result.spf.errors)
-        if (
-            result.spf_dmarc_scan_result
-            and result.spf_dmarc_scan_result.dmarc
-            and not result.spf_dmarc_scan_result.dmarc.valid
-        ):
+            status_reasons.extend(result.spf_dmarc_scan_result.spf.warnings)
+        if result.spf_dmarc_scan_result and result.spf_dmarc_scan_result.dmarc:
             status_reasons.extend(result.spf_dmarc_scan_result.dmarc.errors)
+            status_reasons.extend(result.spf_dmarc_scan_result.dmarc.warnings)
 
         if status_reasons:
             status = TaskStatus.INTERESTING

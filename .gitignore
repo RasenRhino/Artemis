@@ -142,3 +142,8 @@ cython_debug/
 .vscode/
 .idea/
 .vim/
+
+# Development Docker Compose file
+docker-compose.dev.yaml
+karton-logs
+output

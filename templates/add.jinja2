@@ -24,25 +24,38 @@
 
         <div class="form-group mb-3">
             <label class="form-label">Targets (separated with newlines)</label>
-            <textarea class="form-control" name="targets">{% for task in tasks %}{{ task }}
+            <textarea class="form-control" name="targets" rows="10" required>{% for task in tasks %}{{ task }}
 {% endfor %}</textarea>
         </div>
         <div class="form-group mb-3">
-            <label class="form-label">Batch file (should contain one target per line)</label>
-            <input class="form-control btn" type="file" name="file">
-        </div>
-        <div class="form-group mb-3">
-            <label class="form-label">Tag</label>
-            <input type="text" class="form-control" name="tag" value="{{ tag }}">
+            <label class="form-label">Enter your tag{% if tag_names %} or select existing one{% endif %}</label>
+            <input list="object-list" class="form-control" name="tag" autocomplete="off" {% if tag %}value="{{ tag }}"{% endif %}>
+            <datalist id="object-list">
+                 {% for tag in tag_names %}
+                    <option>{{ tag.tag_name }}</option>
+                 {% endfor %}
+            </datalist>
+
             <small class="form-text text-muted">
-                You may provide any string here - it will be saved in the task results
-                in the database so that you can e.g. use the value when processing
-                the results automatically.
+                You can enter any value here. Tags can be used to group scanned targets - you can use them e.g. when browsing the results or exporting
+                the scanning reports.
             </small>
         </div>
         <input type="submit" class="btn btn-primary" value="Start scan">
-
         <h2 class="mt-4">Advanced settings</h2>
+        <div class="form-group mb-3">
+            <label class="form-label">Priority</label>
+            <select name="priority" class="form-control">
+                {% for possible_priority in priorities %}
+                    <option name="{{ possible_priority.value }}" {% if priority == possible_priority.value %}selected{% endif %}>{{ possible_priority.value }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group mb-3">
+            <small class="form-text text-muted">
+                The priority defines how fast the scanning will be performed - tasks with higher priority will be done earlier.
+            </small>
+        </div>
         <div class="form-group mb-3 enabled-modules">
             <label class="form-label">Enabled modules</label>
             (<a href="" onclick="setSelectionForAllModules(true); return false;">select all except example</a> |

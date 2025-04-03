@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from artemis.domains import is_domain
+from artemis.ip_utils import is_ip_address
+from artemis.reporting.severity import Severity
 from artemis.resolvers import ResolutionException, lookup
-from artemis.utils import get_host_from_url, is_ip_address
+from artemis.utils import get_host_from_url
 
 from .normal_form import NormalForm
 from .report_type import ReportType
@@ -43,6 +45,9 @@ class Report:
     # Whether we already reported that vulnerability earlier
     is_subsequent_reminder: bool = False
 
+    # Whether Artemis considers this report low-confidence
+    is_suspicious: bool = False
+
     # What was the last domain observed when scanning (e.g. when we started with example.com, then proceeded to
     # subdomain1.example.com, then resolved it to an IP and found a vulnerability on this IP, last_domain would be
     # subdomain1.example.com).
@@ -56,6 +61,15 @@ class Report:
     original_task_result_id: Optional[str] = None
     original_task_result_root_uid: Optional[str] = None
     original_task_target_string: Optional[str] = None
+
+    # The severity (added during report post-processing)
+    severity: Optional[Severity] = None
+
+    # The normal form (added during report post-processing)
+    normal_form: Optional[NormalForm] = None
+
+    # HTML render of the report (added during post-processing)
+    html: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Sanity check - at this moment, only URLs and domains are supported

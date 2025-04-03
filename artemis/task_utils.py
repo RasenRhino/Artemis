@@ -1,8 +1,11 @@
 import urllib
+from typing import List
 
 from karton.core import Task
+from redis import Redis
 
 from artemis.binds import Service, TaskType
+from artemis.ip_utils import to_ip_range
 
 
 def get_target_host(task: Task) -> str:
@@ -13,7 +16,7 @@ def get_target_host(task: Task) -> str:
         assert isinstance(payload, str)
         return payload
 
-    if task_type == TaskType.DOMAIN:
+    if task_type == TaskType.DOMAIN or task_type == TaskType.DOMAIN_THAT_MAY_NOT_EXIST:
         payload = task.get_payload(TaskType.DOMAIN)
         assert isinstance(payload, str)
         return payload
@@ -31,6 +34,14 @@ def get_target_host(task: Task) -> str:
 
     if task_type == TaskType.NEW:
         payload = task.get_payload("data")
+        assert isinstance(payload, str)
+
+        if ":" in payload:  # host:port
+            return payload.split(":")[0]
+        return payload
+
+    if task_type == TaskType.DEVICE:
+        payload = task.get_payload("host")
         assert isinstance(payload, str)
         return payload
 
@@ -54,3 +65,69 @@ def get_target_url(task: Task) -> str:
         protocol += "s"
 
     return f"{protocol}://{target}:{port}"
+
+
+ANALYSIS_NUM_FINISHED_TASKS_KEY_PREFIX = b"analysis-num-finished-tasks-"
+ANALYSIS_NUM_IN_PROGRESS_TASKS_KEY_PREFIX = b"analysis-num-in-progress-tasks-"
+
+
+def increase_analysis_num_finished_tasks(redis: Redis, root_uid: str, by: int = 1) -> None:  # type: ignore[type-arg]
+    redis.incrby(ANALYSIS_NUM_FINISHED_TASKS_KEY_PREFIX + root_uid.encode("ascii"), by)
+
+
+def get_analysis_num_finished_tasks(redis: Redis, root_uid: str) -> int:  # type: ignore[type-arg]
+    return int(redis.get(ANALYSIS_NUM_FINISHED_TASKS_KEY_PREFIX + root_uid.encode("ascii")) or 0)
+
+
+def increase_analysis_num_in_progress_tasks(redis: Redis, root_uid: str, by: int = 1) -> None:  # type: ignore[type-arg]
+    redis.incrby(ANALYSIS_NUM_IN_PROGRESS_TASKS_KEY_PREFIX + root_uid.encode("ascii"), by)
+
+
+def get_analysis_num_in_progress_tasks(redis: Redis, root_uid: str) -> int:  # type: ignore[type-arg]
+    return int(redis.get(ANALYSIS_NUM_IN_PROGRESS_TASKS_KEY_PREFIX + root_uid.encode("ascii")) or 0)
+
+
+def get_task_target(task: Task) -> str:
+    result = None
+    if task.headers["type"] == TaskType.NEW:
+        result = task.payload.get("data", None)
+    elif task.headers["type"] == TaskType.IP:
+        result = task.payload.get("ip", None)
+    elif task.headers["type"] == TaskType.DOMAIN or task.headers["type"] == TaskType.DOMAIN_THAT_MAY_NOT_EXIST:
+        result = task.payload.get("domain", None)
+    elif task.headers["type"] == TaskType.WEBAPP:
+        result = task.payload.get("url", None)
+    elif task.headers["type"] == TaskType.URL:
+        result = task.payload.get("url", None)
+    elif task.headers["type"] == TaskType.SERVICE:
+        if "host" in task.payload and "port" in task.payload:
+            result = task.payload["host"] + ":" + str(task.payload["port"])
+    elif task.headers["type"] == TaskType.DEVICE:
+        if "host" in task.payload and "port" in task.payload:
+            result = task.payload["host"] + ":" + str(task.payload["port"])
+
+    if not result:
+        result = task.headers["type"] + ": " + task.uid
+
+    assert isinstance(result, str)
+    return result
+
+
+def has_ip_range(task: Task) -> bool:
+    return "original_ip" in task.payload_persistent or "original_ip_range" in task.payload_persistent
+
+
+def get_ip_range(task: Task) -> List[str]:
+    if not has_ip_range(task):
+        return []
+
+    # The ordering here is important - we want to return the full IP range, not a single IP
+    if "original_ip_range" in task.payload_persistent:
+        ip_range = to_ip_range(task.payload_persistent["original_ip_range"])
+        if not ip_range:
+            ip_range = []
+        return ip_range
+    elif "original_ip" in task.payload_persistent:
+        return [task.payload_persistent["original_ip"]]
+    else:
+        assert False

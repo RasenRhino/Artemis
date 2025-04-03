@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from artemis.domains import is_domain
+from artemis.reporting.base.language import Language
 from artemis.reporting.base.report import Report
 from artemis.reporting.base.report_type import ReportType
 from artemis.reporting.base.reporters import get_all_reporters
@@ -23,18 +24,23 @@ class SingleTopLevelTargetExportData:
 class ExportData:
     timestamp: datetime.datetime
     tag: Optional[str]
+    language: str
     scanned_top_level_targets: List[str]
     scanned_targets: List[str]
+    ips: Dict[str, List[str]]
     messages: Dict[str, SingleTopLevelTargetExportData]
     alerts: List[str]
+    hosts_with_waf_detected: List[str]
 
 
 def build_export_data(
     previous_reports: List[Report],
     tag: Optional[str],
+    language: Language,
     db: DataLoader,
     custom_template_arguments_parsed: Dict[str, str],
     timestamp: datetime.datetime,
+    skip_suspicious_reports: bool,
 ) -> ExportData:
     reports = deduplicate_reports(previous_reports, db.reports)
 
@@ -47,6 +53,15 @@ def build_export_data(
     alerts = []
     for reporter in get_all_reporters():
         alerts.extend(reporter.get_alerts(reports))
+
+    for top_level_target in list(reports_per_top_level_target.keys()):
+        reports_per_top_level_target[top_level_target] = [
+            report
+            for report in reports_per_top_level_target[top_level_target]
+            if not report.is_suspicious or not skip_suspicious_reports
+        ]
+        if len(reports_per_top_level_target[top_level_target]) == 0:
+            del reports_per_top_level_target[top_level_target]
 
     message_data: Dict[str, SingleTopLevelTargetExportData] = {}
 
@@ -80,8 +95,11 @@ def build_export_data(
     return ExportData(
         timestamp=timestamp,
         tag=tag,
+        language=language.value,
         scanned_top_level_targets=list(db.scanned_top_level_targets),
         scanned_targets=list(db.scanned_targets),
+        ips=db.ips,
         messages=message_data,
         alerts=alerts,
+        hosts_with_waf_detected=list(db.hosts_with_waf_detected),
     )

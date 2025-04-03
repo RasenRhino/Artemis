@@ -1,14 +1,16 @@
+import copy
 import dataclasses
 import datetime
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
+import bs4
 import termcolor
 import typer
-from jinja2 import BaseLoader, Environment, StrictUndefined, Template
+from jinja2 import BaseLoader, Environment, StrictUndefined, Template, select_autoescape
 
 from artemis.blocklist import load_blocklist
 from artemis.config import Config
@@ -32,15 +34,33 @@ from artemis.reporting.export.translations import install_translations
 from artemis.utils import CONSOLE_LOG_HANDLER
 
 environment = Environment(
-    loader=BaseLoader(), extensions=["jinja2.ext.i18n"], undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True
+    loader=BaseLoader(),
+    extensions=["jinja2.ext.i18n"],
+    undefined=StrictUndefined,
+    trim_blocks=True,
+    lstrip_blocks=True,
+    autoescape=select_autoescape(default=True),
 )
 
 
-HOST_ROOT_PATH = "/host-root/"
+def unwrap(html: str) -> str:
+    """Uwraps html if it's wrapped in a single tag (e.g. <div>)."""
+    html = html.strip()
+    soup = bs4.BeautifulSoup(html)
+    while len(list(soup.children)) == 1:
+        only_child = list(soup.children)[0]
+
+        if only_child.name:  # type: ignore
+            only_child.unwrap()
+            soup = bs4.BeautifulSoup(soup.renderContents().strip())
+        else:
+            break
+
+    return soup.renderContents().decode("utf-8", "ignore")
 
 
 def _build_message_template_and_print_path(output_dir: Path, silent: bool) -> Template:
-    output_message_template_file_name = output_dir / "message_template.jinja2"
+    output_message_template_file_name = output_dir / "advanced" / "message_template.jinja2"
 
     message_template_content = build_message_template()
     message_template = environment.from_string(message_template_content)
@@ -54,8 +74,8 @@ def _build_message_template_and_print_path(output_dir: Path, silent: bool) -> Te
 
 
 def _install_translations_and_print_path(language: Language, output_dir: Path, silent: bool) -> None:
-    translations_file_name = output_dir / "translations.po"
-    compiled_translations_file_name = output_dir / "compiled_translations.mo"
+    translations_file_name = output_dir / "advanced" / "translations.po"
+    compiled_translations_file_name = output_dir / "advanced" / "compiled_translations.mo"
     install_translations(language, environment, translations_file_name, compiled_translations_file_name)
 
     if not silent:
@@ -64,7 +84,7 @@ def _install_translations_and_print_path(language: Language, output_dir: Path, s
 
 
 def _dump_export_data_and_print_path(export_data: ExportData, output_dir: Path, silent: bool) -> None:
-    output_json_file_name = output_dir / "output.json"
+    output_json_file_name = output_dir / "advanced" / "output.json"
 
     with open(output_json_file_name, "w") as f:
         json.dump(export_data, f, indent=4, cls=JSONEncoderAdditionalTypes)
@@ -94,66 +114,66 @@ def _build_messages_and_print_path(
         with open(output_messages_directory_name / (top_level_target_shortened + ".html"), "w") as f:
             f.write(message_template.render({"data": export_data_dict["messages"][top_level_target]}))
 
+    for message in export_data.messages.values():
+        for report in message.reports:
+            message_data = {
+                "contains_type": {report.report_type},
+                "reports": [report],
+                "custom_template_arguments": copy.deepcopy(message.custom_template_arguments),
+            }
+            message_data["custom_template_arguments"]["skip_html_and_body_tags"] = True  # type: ignore
+            message_data["custom_template_arguments"]["skip_header_and_footer_text"] = True  # type: ignore
+            report.html = unwrap(message_template.render({"data": message_data}))
+
     if not silent:
         print()
         print(termcolor.colored(f"Messages written to: {output_messages_directory_name}", attrs=["bold"]))
 
 
-def main(
-    previous_reports_directory: Path = typer.Argument(
-        None,
-        help="The directory where JSON files from previous exports reside. This is to prevent the same (or similar) "
-        "bug to be reported multiple times.",
-    ),
-    tag: Optional[str] = typer.Option(
-        None,
-        help="Allows you to filter by the tag you provided when adding targets to be scanned. Only vulnerabilities "
-        "from targets with this tag will be exported.",
-    ),
-    language: Language = typer.Option(Language.en_US.value, help="Output report language (e.g. pl_PL or en_US)."),
-    custom_template_arguments: str = typer.Option(
-        "",
-        help="Custom template arguments in the form of name1=value1,name2=value2,... - the original templates "
-        "don't need them, but if you modified them on your side, they might.",
-    ),
-    silent: bool = typer.Option(
-        False,
-        "--silent",
-        help="Print only the resulting folder path",
-    ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        help="Print more information (e.g. whether some types of reports have not been observed for a long time).",
-    ),
-) -> None:
+def export(
+    language: Language,
+    custom_template_arguments: Dict[str, str] = {},
+    silent: bool = False,
+    verbose: bool = False,
+    previous_reports_directory: Optional[Path] = None,
+    tag: Optional[str] = None,
+    skip_hooks: bool = False,
+    skip_suspicious_reports: bool = False,
+) -> Path:
     if silent:
         CONSOLE_LOG_HANDLER.setLevel(level=logging.ERROR)
     blocklist = load_blocklist(Config.Miscellaneous.BLOCKLIST_FILE)
 
     if previous_reports_directory:
-        previous_reports = load_previous_reports(Path(HOST_ROOT_PATH) / str(previous_reports_directory).lstrip(os.sep))
+        previous_reports = load_previous_reports(previous_reports_directory)
     else:
         previous_reports = []
 
-    custom_template_arguments_parsed = parse_custom_template_arguments(custom_template_arguments)
     db = DB()
     export_db_connector = DataLoader(db, blocklist, language, tag, silent)
-    # we strip microseconds so that the timestamp in export_data json and folder name are equal
-    timestamp = datetime.datetime.now().replace(microsecond=0)
+    timestamp = datetime.datetime.now()
     export_data = build_export_data(
-        previous_reports, tag, export_db_connector, custom_template_arguments_parsed, timestamp
+        previous_reports,
+        tag,
+        language,
+        export_db_connector,
+        custom_template_arguments,
+        timestamp,
+        skip_suspicious_reports,
     )
-    date_str = timestamp.strftime("%Y-%m-%d_%H_%M_%S")
-    output_dir = OUTPUT_LOCATION / date_str
-    os.mkdir(output_dir)
+    date_str = timestamp.isoformat()
+    output_dir = OUTPUT_LOCATION / str(tag) / date_str
+    os.makedirs(output_dir)
+    os.makedirs(output_dir / "advanced")
 
     _install_translations_and_print_path(language, output_dir, silent)
 
-    run_export_hooks(output_dir, export_data, silent)
+    if not skip_hooks:
+        run_export_hooks(output_dir, export_data, silent)
 
-    _dump_export_data_and_print_path(export_data, output_dir, silent)
     message_template = _build_message_template_and_print_path(output_dir, silent)
+    _build_messages_and_print_path(message_template, export_data, output_dir, silent)
+    _dump_export_data_and_print_path(export_data, output_dir, silent)
 
     print_and_save_stats(export_data, output_dir, silent)
 
@@ -170,12 +190,53 @@ def main(
         for tag in sorted([key for key in export_db_connector.tag_stats.keys() if key]):
             print(f"\t{tag}: {export_db_connector.tag_stats[tag]}")
 
-    _build_messages_and_print_path(message_template, export_data, output_dir, silent)
-
     if not silent:
         for alert in export_data.alerts:
             print(termcolor.colored("ALERT:" + alert, color="red"))
+    return output_dir
+
+
+def export_cli(
+    previous_reports_directory: Optional[Path] = typer.Argument(
+        None,
+        help="The directory where JSON files from previous exports reside. This is to prevent the same (or similar) "
+        "bug to be reported multiple times.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        help="Allows you to filter by the tag you provided when adding targets to be scanned. Only vulnerabilities "
+        "from targets with this tag will be exported.",
+    ),
+    language: str = typer.Option(Language.en_US.value, help="Output report language (e.g. pl_PL or en_US)."),  # type: ignore
+    custom_template_arguments: Optional[str] = typer.Option(
+        "",
+        help="Custom template arguments in the form of name1=value1,name2=value2,... - the original templates "
+        "don't need them, but if you modified them on your side, they might.",
+    ),
+    silent: bool = typer.Option(
+        False,
+        "--silent",
+        help="Print only the resulting folder path",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Print more information (e.g. whether some types of reports have not been observed for a long time).",
+    ),
+) -> Path:
+    if custom_template_arguments is None:
+        custom_template_arguments_parsed = {}
+    else:
+        custom_template_arguments_parsed = parse_custom_template_arguments(custom_template_arguments)
+    return export(
+        previous_reports_directory=previous_reports_directory,
+        tag=tag,
+        language=Language(language),
+        custom_template_arguments=custom_template_arguments_parsed,
+        silent=silent,
+        verbose=verbose,
+    )
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    typer.run(export_cli)

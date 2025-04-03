@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from karton.core.backend import KartonBackend
 from karton.core.config import Config as KartonConfig
 
-from artemis.db import DB, Analysis, ScheduledTask, TaskResult
+from artemis.db import DB, Analysis, ReportGenerationTask, ScheduledTask, TaskResult
 from artemis.utils import build_logger
 
 BACKEND_URL = "http://web:5000/"
@@ -32,6 +32,7 @@ class BaseE2ETestCase(TestCase):
         session = db.session()
         session.query(ScheduledTask).delete()
         session.query(Analysis).delete()
+        session.query(ReportGenerationTask).delete()
         session.query(TaskResult).delete()
         session.commit()
 
@@ -53,6 +54,7 @@ class BaseE2ETestCase(TestCase):
                 BACKEND_URL + "add",
                 data={
                     "csrf_token": csrf_token,
+                    "priority": "normal",
                     "targets": "\n".join(tasks),
                     "tag": tag,
                 },
@@ -69,6 +71,7 @@ class BaseE2ETestCase(TestCase):
                 BACKEND_URL + "add",
                 data={
                     "csrf_token": csrf_token,
+                    "priority": "normal",
                     "targets": "\n".join(tasks),
                     "tag": tag,
                     "choose_modules_to_enable": True,

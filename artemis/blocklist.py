@@ -32,6 +32,7 @@ class BlocklistItem:
     # - if all match, report/scanning is skipped.
     # The same is repeated for all BlocklistItems - if at least one matches, report/scanning is skipped.
     mode: BlocklistMode
+    domain_only: Optional[str] = None
     domain_and_subdomains: Optional[str] = None
     subdomains: Optional[str] = None
     ip_range: Optional[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]] = None
@@ -56,6 +57,7 @@ def load_blocklist(file_path: Optional[str]) -> List[BlocklistItem]:
     expected_keys = {
         "mode",
         "domain_and_subdomains",
+        "domain_only",
         "subdomains",
         "ip_range",
         "until",
@@ -71,10 +73,17 @@ def load_blocklist(file_path: Optional[str]) -> List[BlocklistItem]:
         if unexpected_keys:
             raise BlocklistError(f"Unexpected keys in entry: {','.join(unexpected_keys)}")
 
+        if "karton_name" in item and item["karton_name"] == "classifier":
+            raise BlocklistError(
+                "It's not possible to blocklist classifier, as blocklists block IPs or domains, "
+                "and classifier supports various input types (e.g. IP ranges converting them to IPs)."
+            )
+
     blocklist_items = [
         BlocklistItem(
             mode=BlocklistMode(item["mode"]),
             domain_and_subdomains=item.get("domain_and_subdomains", None),
+            domain_only=item.get("domain_only", None),
             subdomains=item.get("subdomains", None),
             ip_range=ipaddress.ip_network(item["ip_range"], strict=False) if item.get("ip_range", None) else None,
             until=datetime.datetime.strptime(item["until"], "%Y-%m-%d") if item.get("until", None) else None,
@@ -96,6 +105,12 @@ def should_block_scanning(
     for item in blocklist:
         if item.mode != BlocklistMode.BLOCK_SCANNING_AND_REPORTING:
             continue
+
+        if item.domain_only:
+            if not domain:
+                continue
+            if domain != item.domain_only:
+                continue
 
         if item.domain_and_subdomains:
             if not domain:
@@ -159,6 +174,12 @@ def blocklist_reports(reports: List[Report], blocklist: List[BlocklistItem]) -> 
             if report.last_domain:
                 domain = report.last_domain
 
+            if item.domain_only:
+                if not domain:
+                    continue
+                if domain != item.domain_only:
+                    continue
+
             if item.domain_and_subdomains:
                 if not domain:
                     continue
@@ -192,15 +213,14 @@ def blocklist_reports(reports: List[Report], blocklist: List[BlocklistItem]) -> 
             if item.report_type and report.report_type != item.report_type:
                 continue
 
-            if (
-                item.nuclei_template_names
-                and report.report_type in ["nuclei_vulnerability", "nuclei_exposed_panel"]
-                and (
-                    report.additional_data["template_name"] in item.nuclei_template_names
-                    or report.additional_data["original_template_name"] in item.nuclei_template_names
-                )
-            ):
-                continue
+            if item.nuclei_template_names:
+                if report.report_type not in ["nuclei_vulnerability", "nuclei_exposed_panel"]:
+                    continue
+                if (
+                    report.additional_data["template_name"] not in item.nuclei_template_names
+                    and report.additional_data["original_template_name"] not in item.nuclei_template_names
+                ):
+                    continue
 
             filtered = True
             logger.info(

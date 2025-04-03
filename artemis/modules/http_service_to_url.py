@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 from karton.core import Task
 
-from artemis import http_requests
+from artemis import load_risk_class
 from artemis.binds import Service, TaskStatus, TaskType
 from artemis.module_base import ArtemisBase
 from artemis.task_utils import get_target_url
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.LOW)
 class HTTPServiceToURL(ArtemisBase):
     """
     Converts HTTP SERVICE tasks to URL tasks for the service root URL so that the URLs can be consumed by other kartons
@@ -19,7 +20,7 @@ class HTTPServiceToURL(ArtemisBase):
     ]
 
     def _process(self, current_task: Task, url: str) -> None:
-        content = http_requests.get(url).content
+        content = self.http_get(url).content
 
         new_task = Task(
             {

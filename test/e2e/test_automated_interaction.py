@@ -3,7 +3,7 @@ from test.e2e.base import BACKEND_URL, BaseE2ETestCase
 
 import requests
 
-from artemis.frontend import get_binds_that_can_be_disabled
+from artemis.karton_utils import get_binds_that_can_be_disabled
 
 
 class AutomatedInteractionTestCase(BaseE2ETestCase):
@@ -50,16 +50,19 @@ class AutomatedInteractionTestCase(BaseE2ETestCase):
 
         analyses = requests.get(BACKEND_URL + "api/analyses", headers={"X-API-Token": "api-token"}).json()
         self.assertEqual(len(analyses), 1)
-        self.assertEqual(set(analyses[0].keys()), {"stopped", "target", "created_at", "id", "tag"})
+        self.assertEqual(
+            set(analyses[0].keys()),
+            {"stopped", "target", "created_at", "id", "tag", "num_pending_tasks", "disabled_modules"},
+        )
         self.assertEqual(analyses[0]["stopped"], False)
         self.assertEqual(analyses[0]["target"], "test-smtp-server.artemis")
         self.assertEqual(analyses[0]["tag"], "automated-interaction")
 
-        self.assertEqual(
+        self.assertTrue(
             int(
                 requests.get(BACKEND_URL + "api/num-queued-tasks", headers={"X-API-Token": "api-token"}).content.strip()
-            ),
-            1,
+            )
+            in [1, 0]  # 0 as the task may have already finished
         )
 
         for i in range(100):
@@ -71,6 +74,10 @@ class AutomatedInteractionTestCase(BaseE2ETestCase):
                 break
 
             time.sleep(1)
+
+        # The disabled modules still need some time to take the task from queue and decide it's not for them.
+        # Let's wait 2 * task poll time (2 * 10s).
+        time.sleep(20)
 
         self.assertEqual(
             int(
@@ -102,7 +109,8 @@ class AutomatedInteractionTestCase(BaseE2ETestCase):
         self.assertEqual(task_results[0]["status"], "INTERESTING")
         self.assertEqual(
             task_results[0]["status_reason"],
-            "Found problems: Valid DMARC record not found. We recommend using all three mechanisms: SPF, DKIM and DMARC to decrease the possibility of successful e-mail message spoofing.",
+            "Found problems: Valid DMARC record not found. We recommend using all three mechanisms: SPF, DKIM and DMARC to decrease the possibility of successful e-mail message spoofing., "
+            "Valid SPF record not found. We recommend using all three mechanisms: SPF, DKIM and DMARC to decrease the possibility of successful e-mail message spoofing.",
         )
         self.assertEqual(task_results[0]["tag"], "automated-interaction")
         self.assertEqual(task_results[0]["target_string"], "test-smtp-server.artemis")

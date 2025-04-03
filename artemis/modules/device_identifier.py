@@ -1,11 +1,12 @@
 from karton.core import Task
 
-from artemis import http_requests
+from artemis import load_risk_class
 from artemis.binds import Device, Service, TaskStatus, TaskType
 from artemis.module_base import ArtemisBase
 from artemis.task_utils import get_target_host, get_target_url
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.LOW)
 class DeviceIdentifier(ArtemisBase):
     """
     Tries to identify the device (FortiOS, ...) and produces a DEVICE task with proper type (e.g. Device.FORTIOS)
@@ -17,11 +18,14 @@ class DeviceIdentifier(ArtemisBase):
         {"type": TaskType.SERVICE.value, "service": Service.HTTP.value},
     ]
 
-    @staticmethod
-    def _identify(url: str) -> Device:
-        response = http_requests.get(url, allow_redirects=True)
-        if "xxxxxxxx-xxxxx" in response.headers.get("Server", "") and "/remote/login" in response.url:
-            return Device.FORTIOS
+    def _identify(self, url: str) -> Device:
+        response = self.http_get(url, allow_redirects=True)
+        if "xxxxxxxx-xxxxx" in response.headers.get("Server", ""):
+            response = self.http_get(f"{url}/remote/login", allow_redirects=True)
+            if response.status_code == 200 and "/remote/login" in response.url:
+                return Device.FORTIOS
+        if "/global-protect/login.esp" in response.url:
+            return Device.PANOSGP
 
         return Device.UNKNOWN
 

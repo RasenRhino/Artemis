@@ -153,6 +153,53 @@
       "contributions": [
         "code"
       ]
+    },
+    {
+      "login": "Matie26",
+      "name": "Mateusz Borkowski",
+      "avatar_url": "https://avatars.githubusercontent.com/u/56604997?v=4",
+      "profile": "https://github.com/Matie26",
+      "contributions": [
+        "code",
+        "ideas"
+      ]
+    },
+    {
+      "login": "jxdv",
+      "name": "jxdv",
+      "avatar_url": "https://avatars.githubusercontent.com/u/138708600?v=4",
+      "profile": "https://github.com/jxdv",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "michalkrzem",
+      "name": "kvothe",
+      "avatar_url": "https://avatars.githubusercontent.com/u/24720262?v=4",
+      "profile": "https://github.com/michalkrzem",
+      "contributions": [
+        "code",
+        "ideas"
+      ]
+    },
+    {
+      "login": "lukigruszka",
+      "name": "lukigruszka",
+      "avatar_url": "https://avatars.githubusercontent.com/u/10619075?v=4",
+      "profile": "https://github.com/lukigruszka",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "dr4g0n369",
+      "name": "Abhinav Karn",
+      "avatar_url": "https://avatars.githubusercontent.com/u/58987388?v=4",
+      "profile": "https://github.com/dr4g0n369",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,

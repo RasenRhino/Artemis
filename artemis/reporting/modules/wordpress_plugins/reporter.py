@@ -1,12 +1,11 @@
 import os
 import re
-from functools import lru_cache
 from typing import Any, Callable, Dict, List, Set
 
-import requests
 from packaging import version
 
 from artemis import utils
+from artemis.fallback_api_cache import FallbackAPICache
 from artemis.reporting.base.language import Language
 from artemis.reporting.base.normal_form import NormalForm, get_url_normal_form
 from artemis.reporting.base.report import Report
@@ -18,35 +17,37 @@ from artemis.reporting.utils import get_target_url, get_top_level_target
 logger = utils.build_logger(__name__)
 
 
-@lru_cache(maxsize=10_000)
-def cached_get_text(url: str) -> str:
-    return requests.get(url).text
-
-
 class WordpressPluginsReporter(Reporter):
     WORDPRESS_OUTDATED_PLUGIN_THEME = ReportType("wordpress_outdated_plugin_theme")
     CLOSED_WORDPRESS_PLUGIN = ReportType("closed_wordpress_plugin")
 
-    VERSION_RE = re.compile("Version: <strong>([^<]*)</strong>")
+    VERSION_RE = re.compile("Version.{0,10}<strong>([^<]*)</strong>")
 
     CLOSED_PLUGINS: Set[str] = set()
 
     @staticmethod
-    def _is_version_known_to_wordpress(plugin_slug: str, plugin_version: str) -> bool:
+    def is_version_known_to_wordpress(plugin_slug: str, plugin_version: str) -> bool:
         # Some plugins don't have the latest version as a tag on SVN repo
-        plugin_site_text = cached_get_text(f"https://wordpress.org/plugins/{plugin_slug}/")
-        if re_match := re.search(WordpressPluginsReporter.VERSION_RE, plugin_site_text):
-            (latest_version,) = re_match.groups(1)
+        plugin_site_response = FallbackAPICache.get(f"https://wordpress.org/plugins/{plugin_slug}/", allow_unknown=True)
+        if plugin_site_response.status_code == 404:
+            return False  # developed outside repo
 
-            if latest_version == plugin_version:
+        re_match = re.search(WordpressPluginsReporter.VERSION_RE, plugin_site_response.text)
+        if not re_match:  # the site is overloaded or other problem - let's fall back to considering the version known
+            logger.error(f"Unable to extract version information about {plugin_slug}")
+            return True
+
+        (latest_version,) = re_match.groups(1)
+
+        if latest_version == plugin_version:
+            return True
+
+        try:
+            assert isinstance(latest_version, str)
+            if version.parse(latest_version) >= version.parse(plugin_version):
                 return True
-
-            try:
-                assert isinstance(latest_version, str)
-                if version.parse(latest_version) >= version.parse(plugin_version):
-                    return True
-            except version.InvalidVersion:
-                pass
+        except version.InvalidVersion:
+            pass
 
         return False
 
@@ -63,7 +64,7 @@ class WordpressPluginsReporter(Reporter):
             plugin_data = task_result["result"]["plugins"][slug]
             if plugin_data["version"]:
                 version = plugin_data["version"]
-                version_exists = WordpressPluginsReporter._is_version_known_to_wordpress(slug, version)
+                version_exists = WordpressPluginsReporter.is_version_known_to_wordpress(slug, version)
             else:
                 # If no version number, let's assume it's one known to WordPress, so the
                 # plugin is *not* developed separately.

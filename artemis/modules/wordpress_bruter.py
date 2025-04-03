@@ -5,7 +5,7 @@ from typing import List
 
 from karton.core import Task
 
-from artemis import http_requests, utils
+from artemis import ip_utils, load_risk_class, utils
 from artemis.binds import TaskStatus, TaskType, WebApplication
 from artemis.config import Config
 from artemis.module_base import ArtemisBase
@@ -28,6 +28,7 @@ PASSWORDS = [
 MAX_USERNAMES_TO_CHECK = 3
 
 
+@load_risk_class.load_risk_class(load_risk_class.LoadRiskClass.MEDIUM)
 class WordPressBruter(ArtemisBase):
     """
     Performs a brute-force attack on WordPress credentials.
@@ -42,7 +43,7 @@ class WordPressBruter(ArtemisBase):
         passwords = copy.copy(PASSWORDS)
         host = utils.get_host_from_url(current_task.get_payload("url"))
 
-        if not utils.is_ip_address(host):
+        if not ip_utils.is_ip_address(host):
             domain_items = host.split(".")
             while domain_items and domain_items[0] in Config.Modules.WordPressBruter.WORDPRESS_BRUTER_STRIPPED_PREFIXES:
                 domain_items = domain_items[1:]
@@ -62,7 +63,7 @@ class WordPressBruter(ArtemisBase):
         usernames = []
 
         try:
-            users = http_requests.get(url + "?rest_route=/wp/v2/users").json()
+            users = self.http_get(url + "?rest_route=/wp/v2/users").json()
             for user_entry in users:
                 usernames.append(user_entry["name"])
         except Exception:
@@ -78,7 +79,7 @@ class WordPressBruter(ArtemisBase):
         credentials = []
         for username in usernames:
             for password in passwords:
-                content = http_requests.post(
+                content = self.http_post(
                     url + "/wp-login.php",
                     data={
                         "log": username,

@@ -1,12 +1,35 @@
+import copy
 import dataclasses
 import json
+import os
+import ssl
+import urllib.parse
 from typing import Any, Dict, Optional
 
 import chardet
 import requests
 
 from artemis.config import Config
-from artemis.utils import throttle_request
+from artemis.utils import build_logger, throttle_request
+
+LOGGER = build_logger(__name__)
+
+
+# As our goal in Artemis is to access the sites in order to test their security, let's
+# enable SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION in order to make a connection even if it's
+# not secure.
+class SSLContextAdapter(requests.adapters.HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):  # type: ignore
+        context = ssl.create_default_context()
+
+        SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION = 1 << 18
+
+        context.check_hostname = False
+        context.options |= SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION
+
+        kwargs["ssl_context"] = context
+        return super().init_poolmanager(*args, **kwargs)  # type: ignore
+
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)  # type: ignore
 
@@ -51,9 +74,35 @@ def _request(
     data: Optional[Dict[str, str]],
     cookies: Optional[Dict[str, str]],
     max_size: int = Config.Miscellaneous.CONTENT_PREFIX_SIZE,
+    requests_per_second: float = Config.Limits.REQUESTS_PER_SECOND,
+    **kwargs: Any,
 ) -> HTTPResponse:
+    if "RUNNING_TESTS" in os.environ:
+        # The de facto limit is 2000 according to
+        # https://stackoverflow.com/questions/417142/what-is-the-maximum-length-of-a-url-in-different-browsers
+        # so let's check something lower to make sure our modules aren't exceeding the limit e.g.
+        # when batching parameters for SQL injection check.
+        assert len(url) < 1600, f"URL too long, has {len(url)} characters"
+
     def _internal_request() -> HTTPResponse:
-        response = getattr(requests, method_name)(
+        headers = copy.copy(HEADERS)
+        headers.update(kwargs["headers"]) if "headers" in kwargs else headers
+
+        s = requests.Session()
+        url_parsed = urllib.parse.urlparse(url)
+        if url_parsed.scheme.lower() == "https":
+            s.mount(url, SSLContextAdapter())
+
+        if url_parsed.username or url_parsed.password:
+            LOGGER.debug(
+                "%s %s",
+                method_name,
+                urllib.parse.urlunparse(url_parsed._replace(netloc="***:***@" + (url_parsed.hostname or ""))),
+            )
+        else:
+            LOGGER.debug("%s %s", method_name, url)
+
+        response = getattr(s, method_name)(
             url,
             allow_redirects=allow_redirects,
             data=data,
@@ -61,7 +110,7 @@ def _request(
             verify=False,
             stream=True,
             timeout=Config.Limits.REQUEST_TIMEOUT_SECONDS,
-            headers=HEADERS,
+            headers=headers,
         )
 
         # Handling situations where the response is very long, which is not handled by requests timeout
@@ -83,7 +132,7 @@ def _request(
             headers=response.headers,
         )
 
-    return throttle_request(_internal_request)  # type: ignore
+    return throttle_request(_internal_request, requests_per_second)  # type: ignore
 
 
 def get(
@@ -91,9 +140,10 @@ def get(
     allow_redirects: bool = True,
     data: Optional[Dict[str, str]] = None,
     cookies: Optional[Dict[str, str]] = None,
-    **kwargs: Any
+    requests_per_second: float = Config.Limits.REQUESTS_PER_SECOND,
+    **kwargs: Any,
 ) -> HTTPResponse:
-    return _request("get", url, allow_redirects, data, cookies, **kwargs)
+    return _request("get", url, allow_redirects, data, cookies, requests_per_second=requests_per_second, **kwargs)
 
 
 def post(
@@ -101,6 +151,7 @@ def post(
     allow_redirects: bool = True,
     data: Optional[Dict[str, str]] = None,
     cookies: Optional[Dict[str, str]] = None,
-    **kwargs: Any
+    requests_per_second: float = Config.Limits.REQUESTS_PER_SECOND,
+    **kwargs: Any,
 ) -> HTTPResponse:
-    return _request("post", url, allow_redirects, data, cookies, **kwargs)
+    return _request("post", url, allow_redirects, data, cookies, requests_per_second=requests_per_second, **kwargs)
